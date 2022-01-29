@@ -154,7 +154,7 @@ If these are functions, the unknown type and module name will be passed to funct
 ```lua
 function p:unknown_module(name)
   -- if can not find "foo.proto", load "my_foo.proto" instead
-  return p:load("my_"..name)
+  return p:parsefile("my_"..name)
 end
 
 function p:unknown_type(name)
@@ -371,6 +371,10 @@ These options are supported currently:
 | `use_default_metatable` | set default values by set table from `pb.default()` as the metatable |
 | `enable_hooks`          | `pb.decode` will call `pb.hooks()` hook functions            |
 | `disable_hooks`         | `pb.decode` do not call hooks **(default)**                  |
+| `encode_default_values` | default values also encode |
+| `no_encode_default_values` | do not encode default values **(default)** |
+| `decode_default_array`  | work with `no_default_values`,decode null to empty table for array |
+| `no_decode_default_array`  | work with `no_default_values`,decode null to nil for array **(default)** |
 
  *Note*: The string returned by `int64_as_string` or `int64_as_hexstring` will prefix a `'#'` character. Because Lua may convert between string with number, prefix a `'#'` makes Lua return the string as-is.
 

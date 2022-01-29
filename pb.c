@@ -33,7 +33,7 @@ PB_NS_BEGIN
 #define check_slice(L,idx)  ((pb_Slice*)luaL_checkudata(L,idx,PB_SLICE))
 #define test_slice(L,idx)   ((pb_Slice*)luaL_testudata(L,idx,PB_SLICE))
 #define push_slice(L,s)     lua_pushlstring((L), (s).p, pb_len((s)))
-#define return_self(L) { lua_settop(L, 1); return 1; }
+#define return_self(L) { return lua_settop(L, 1), 1; }
 
 #if LUA_VERSION_NUM < 502
 #include <assert.h>
@@ -92,7 +92,7 @@ static void *luaL_testudata(lua_State *L, int idx, const char *type) {
 
 static int luaL_fileresult(lua_State *L, int stat, const char *fname) {
     int en = errno;
-    if (stat) { lua_pushboolean(L, 1); return 1; }
+    if (stat) return lua_pushboolean(L, 1), 1;
     lua_pushnil(L);
     lua_pushfstring(L, "%s: %s", fname, strerror(en));
     /*if (fname) lua_pushfstring(L, "%s: %s", fname, strerror(en));
@@ -111,11 +111,11 @@ static int luaL_fileresult(lua_State *L, int stat, const char *fname) {
 # define lua53_rawgetp  lua_rawgetp
 #else /* not Lua 5.3 */
 static int lua53_getfield(lua_State *L, int idx, const char *field)
-{ lua_getfield(L, idx, field); return lua_type(L, -1); }
+{ return lua_getfield(L, idx, field), lua_type(L, -1); }
 static int lua53_rawgeti(lua_State *L, int idx, lua_Integer i)
-{ lua_rawgeti(L, idx, i); return lua_type(L, -1); }
+{ return lua_rawgeti(L, idx, i), lua_type(L, -1); }
 static int lua53_rawgetp(lua_State *L, int idx, const void *p)
-{ lua_rawgetp(L, idx, p); return lua_type(L, -1); }
+{ return lua_rawgetp(L, idx, p), lua_type(L, -1); }
 #endif
 
 
@@ -143,6 +143,8 @@ typedef struct lpb_State {
     unsigned enum_as_value : 1;
     unsigned default_mode  : 2; /* lpb_DefMode */
     unsigned int64_mode    : 2; /* lpb_Int64Mode */
+    unsigned encode_default_values : 1;
+    unsigned decode_default_array  : 1;
 } lpb_State;
 
 static int lpb_reftable(lua_State *L, int ref) {
@@ -1001,7 +1003,7 @@ static int lpb_unpackfmt(lua_State *L, int idx, const char *fmt, pb_Slice *s) {
     for (; *fmt != '\0'; ++fmt) {
         if (lpb_unpackloc(L, &idx, top, *fmt, s, &rets))
             continue;
-        if (s->p >= s->end) { lua_pushnil(L); return rets + 1; }
+        if (s->p >= s->end) return lua_pushnil(L), rets + 1;
         luaL_checkstack(L, 1, "too many values");
         if (!lpb_unpackscalar(L, &idx, top, *fmt, s)) {
             argcheck(L, (type = lpb_typefmt(*fmt)) >= 0,
@@ -1229,7 +1231,7 @@ static int Lpb_loadfile(lua_State *L) {
     pb_initbuffer(&b);
     do {
         char *d = pb_prepbuffsize(&b, BUFSIZ);
-        if (d == NULL) { fclose(fp); return luaL_error(L, "out of memory"); }
+        if (d == NULL) return fclose(fp), luaL_error(L, "out of memory");
         size = fread(d, 1, BUFSIZ, fp);
         pb_addsize(&b, size);
     } while (size == BUFSIZ);
@@ -1378,7 +1380,7 @@ static int lpb_pushdefault(lua_State *L, lpb_State *LS, const pb_Field *f, int i
     const pb_Type *type;
     char *end;
     if (f == NULL) return 0;
-    if (is_proto3 && f->repeated) { lua_newtable(L); return 1; }
+    if (is_proto3 && f->repeated) return lua_newtable(L), 1;
     switch (f->type_id) {
     case PB_Tbytes: case PB_Tstring:
         if (f->default_value)
@@ -1630,7 +1632,7 @@ static void lpbE_tagfield(lpb_Env *e, const pb_Field *f, int ignorezero) {
             pb_pair(f->number, pb_wtypebytype(f->type_id)));
     size_t ignoredlen;
     lpbE_field(e, f, &ignoredlen);
-    if (ignoredlen != 0 && ignorezero)
+    if (!e->LS->encode_default_values && ignoredlen != 0 && ignorezero)
         e->b->size -= (unsigned)(ignoredlen + hlen);
 }
 
@@ -1741,7 +1743,7 @@ static void lpb_usedechooks(lua_State *L, lpb_State *LS, const pb_Type *t) {
 static void lpb_pushtypetable(lua_State *L, lpb_State *LS, const pb_Type *t) {
     const pb_Field *f = NULL;
     int mode = LS->default_mode;
-    lua_createtable(L, 0, t->field_count);
+    lua_createtable(L, 0, t->field_count - t->oneof_count);
     switch (t->is_proto3 && mode == LPB_DEFDEF ? LPB_COPYDEF : mode) {
     case LPB_COPYDEF:
         while (pb_nextfield(t, &f))
@@ -1756,6 +1758,11 @@ static void lpb_pushtypetable(lua_State *L, lpb_State *LS, const pb_Type *t) {
         lua_setmetatable(L, -2);
         break;
     default: /* no default value */
+        if (LS->decode_default_array) {
+            while (pb_nextfield(t, &f))
+                if (f->repeated && lpb_pushdefault(L, LS, f, t->is_proto3))
+                    lua_setfield(L, -2, (const char*)f->name);
+        }
         break;
     }
 }
@@ -1867,6 +1874,7 @@ static int lpbD_message(lpb_Env *e, const pb_Type *t) {
     lua_State *L = e->L;
     pb_Slice *s = e->s;
     uint32_t tag;
+    luaL_checkstack(L, t->field_count * 2, "not enough stack space for fields");
     while (pb_readvarint32(s, &tag)) {
         const pb_Field *f = pb_field(t, pb_gettag(tag));
         if (f == NULL)
@@ -1921,6 +1929,10 @@ static int Lpb_option(lua_State *L) {
     X(8, use_default_metatable, LS->default_mode = LPB_METADEF)    \
     X(9, enable_hooks,          LS->use_hooks = 1)                 \
     X(10, disable_hooks,        LS->use_hooks = 0)                 \
+    X(11, encode_default_values,LS->encode_default_values = 1)     \
+    X(12, no_encode_default_values,LS->encode_default_values = 0)  \
+    X(13, decode_default_array, LS->decode_default_array = 1)      \
+    X(14, no_decode_default_array, LS->decode_default_array = 0)   \
 
     static const char *opts[] = {
 #define X(ID,NAME,CODE) #NAME,
