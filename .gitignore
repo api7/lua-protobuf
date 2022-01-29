@@ -7,10 +7,12 @@
 *.gcda
 *.gcno
 *.pb
+!testdata/proto.pb
 *.dSYM
 *.out
 test*.lua
 lua*/
 test*
+!testdata/
 *.natvis
 out*
