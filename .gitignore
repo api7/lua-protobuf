@@ -4,6 +4,8 @@
 *.exp
 *.gcda
 *.gcno
+*.pb
+*.dSYM
 *.gcov
 *.iobj
 *.ipdb
@@ -20,3 +22,4 @@ lua*/
 out*
 test*
 test*.lua
+!testdata/proto.pb
