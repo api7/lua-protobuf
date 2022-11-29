@@ -12,6 +12,7 @@
 *.lib
 *.natvis
 *.obj
+*.o
 *.out
 *.pb
 *.pdb
