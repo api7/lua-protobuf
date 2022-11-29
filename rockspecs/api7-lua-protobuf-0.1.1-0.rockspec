@@ -1,9 +1,9 @@
 package = "api7-lua-protobuf"
-version = "0.1.0-0"
+version = "0.1.1-0"
 
 source = {
   url = "git://github.com/api7/lua-protobuf.git",
-  tag = "v0.1.0",
+  tag = "v0.1.1",
 }
 
 description = {
