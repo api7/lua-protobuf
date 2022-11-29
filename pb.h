@@ -239,7 +239,6 @@ PB_API pb_Service *pb_newservice(pb_State *S, pb_Name *name);
 PB_API const pb_Type  *pb_type  (const pb_State *S, const pb_Name *tname);
 PB_API const pb_Field *pb_fname (const pb_Type *t,  const pb_Name *tname);
 PB_API const pb_Field *pb_field (const pb_Type *t,  int32_t number);
-PB_API const pb_Service *pb_service (const pb_State *S, const pb_Name *name);
 
 PB_API const pb_Name *pb_oneofname (const pb_Type *t, int oneof_index);
 
@@ -334,6 +333,7 @@ struct pb_Field {
     pb_Type *type;
     pb_Name *default_value;
     int32_t  number;
+    int32_t  sort_index;
     unsigned oneof_idx : 24;
     unsigned type_id   : 5; /* PB_T* enum */
     unsigned repeated  : 1;
@@ -344,10 +344,12 @@ struct pb_Field {
 struct pb_Type {
     pb_Name    *name;
     const char *basename;
+    pb_Field **field_sort;
     pb_Table field_tags;
     pb_Table field_names;
     pb_Table oneof_index;
     unsigned oneof_count; /* extra field count from oneof entries */
+    unsigned oneof_field; /* extra field in oneof declarations */
     unsigned field_count : 28;
     unsigned is_enum   : 1;
     unsigned is_map    : 1;
@@ -1187,11 +1189,30 @@ PB_API const pb_Field *pb_field(const pb_Type *t, int32_t number) {
     return fe ? fe->value : NULL;
 }
 
-PB_API const pb_Service *pb_service(const pb_State *S, const pb_Name *name) {
-    pb_ServiceEntry *e = NULL;
-    if (S != NULL && name != NULL)
-        e = (pb_ServiceEntry*)pb_gettable(&S->services, (pb_Key)name);
-    return e ? e->value : NULL;
+static int comp_field(const void* a, const void* b) {
+    return (*(const pb_Field**)a)->number - (*(const pb_Field**)b)->number;
+}
+
+PB_API pb_Field** pb_sortfield(pb_Type* t) {
+    if (!t->field_sort && t->field_count) {
+        int index = 0;
+        unsigned int i = 0;
+        const pb_Field* f = NULL;
+        pb_Field** list = malloc(sizeof(pb_Field*) * t->field_count);
+
+        assert(list);
+        while (pb_nextfield(t, &f)) {
+            list[index++] = (pb_Field*)f;
+        }
+
+        qsort(list, index, sizeof(pb_Field*), comp_field);
+        for (i = 0; i < t->field_count; i++) {
+            list[i]->sort_index = i + 1;
+        }
+        t->field_sort = list;
+    }
+
+    return t->field_sort;
 }
 
 PB_API const pb_Name *pb_oneofname(const pb_Type *t, int idx) {
@@ -1276,6 +1297,13 @@ PB_API pb_Type *pb_newtype(pb_State *S, pb_Name *tname) {
     return te->value = t;
 }
 
+PB_API void pb_delsort(pb_Type *t) {
+    if (t->field_sort) {
+        free(t->field_sort);
+        t->field_sort = NULL;
+    }
+}
+
 PB_API void pb_deltype(pb_State *S, pb_Type *t) {
     pb_FieldEntry *nf = NULL;
     pb_OneofEntry *ne = NULL;
@@ -1296,8 +1324,9 @@ PB_API void pb_deltype(pb_State *S, pb_Type *t) {
     pb_freetable(&t->field_tags);
     pb_freetable(&t->field_names);
     pb_freetable(&t->oneof_index);
-    t->oneof_count = 0, t->field_count = 0;
+    t->oneof_field = 0, t->field_count = 0;
     t->is_dead = 1;
+    pb_delsort(t);
     /*pb_delname(S, t->name); */
     /*pb_poolfree(&S->typepool, t); */
 }
@@ -1324,6 +1353,7 @@ PB_API pb_Field *pb_newfield(pb_State *S, pb_Type *t, pb_Name *fname, int32_t nu
     if (tf->value && pb_fname(t, tf->value->name) != tf->value)
         pbT_freefield(S, tf->value), --t->field_count;
     ++t->field_count;
+    pb_delsort(t);
     return nf->value = tf->value = f;
 }
 
@@ -1336,6 +1366,7 @@ PB_API void pb_delfield(pb_State *S, pb_Type *t, pb_Field *f) {
     if (nf && nf->value == f) nf->entry.key = 0, nf->value = NULL, ++count;
     if (tf && tf->value == f) tf->entry.key = 0, tf->value = NULL, ++count;
     if (count) pbT_freefield(S, f), --t->field_count;
+    pb_delsort(t);
 }
 
 PB_API void pb_delservice(pb_State *S, pb_Service *s) {
@@ -1760,7 +1791,7 @@ static int pbL_loadField(pb_State *S, pbL_FieldInfo *info, pb_Loader *L, pb_Type
     pbCE(f = pb_newfield(S, t, pb_newname(S, info->name, NULL), info->number));
     f->default_value = pb_newname(S, info->default_value, NULL);
     f->type      = ft;
-    if ((f->oneof_idx = info->oneof_index)) ++t->oneof_count;
+    if ((f->oneof_idx = info->oneof_index)) ++t->oneof_field;
     f->type_id   = info->type;
     f->repeated  = info->label == 3; /* repeated */
     f->packed    = info->packed >= 0 ? info->packed : L->is_proto3 && f->repeated;
@@ -1789,7 +1820,7 @@ static int pbL_loadType(pb_State *S, pbL_TypeInfo *info, pb_Loader *L) {
         pbC(pbL_loadEnum(S, &info->enum_type[i], L));
     for (i = 0, count = pbL_count(info->nested_type); i < count; ++i)
         pbC(pbL_loadType(S, &info->nested_type[i], L));
-    t->oneof_count -= pbL_count(info->oneof_decl);
+    t->oneof_count = pbL_count(info->oneof_decl);
     L->b.size = (unsigned)curr;
     return PB_OK;
 }
